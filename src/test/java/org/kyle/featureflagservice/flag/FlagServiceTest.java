@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -24,15 +23,14 @@ class FlagServiceTest {
     @Mock
     private FlagRepository repo;
 
-    @InjectMocks
-    private FlagService service;
-
     @Captor
-    ArgumentCaptor<Flag> flagCaptor;
+    private ArgumentCaptor<Flag> flagCaptor;
 
+    private FlagService service;
     private Flag flag;
-
     private FlagRequest request;
+    private FlagRequest updateRequest;
+    private static final Long ID = 1L;
 
     private void assertFlagEqualsResult(FlagResponse response) {
         assertThat(response.id()).isEqualTo(flag.getId());
@@ -43,12 +41,12 @@ class FlagServiceTest {
         assertThat(response.rolloutPercentage()).isEqualTo(flag.getRolloutPercentage());
     }
 
-    private FlagRequest updateRequest;
-
     @BeforeEach
     void setUp() {
+        service = new FlagService(repo, new FlagProperties(Set.of("dev", "prod")));
+
         flag = new Flag();
-        ReflectionTestUtils.setField(flag, "id", 1L);
+        ReflectionTestUtils.setField(flag, "id", ID);
         flag.setName("test-flag");
         flag.setDescription("Test flag");
         flag.setEnabled(true);
@@ -66,7 +64,7 @@ class FlagServiceTest {
                 flag.getName() + "-updated",
                 flag.getDescription() + " - Updated",
                 !flag.isEnabled(),
-                Set.of("test"),
+                Set.of("prod"),
                 50
         );
     }
@@ -86,9 +84,9 @@ class FlagServiceTest {
 
     @Test
     void testGet() {
-        given(repo.findById(flag.getId())).willReturn(Optional.of(flag));
+        given(repo.findById(ID)).willReturn(Optional.of(flag));
 
-        FlagResponse result = service.get(flag.getId());
+        FlagResponse result = service.get(ID);
 
         assertFlagEqualsResult(result);
         then(repo).shouldHaveNoMoreInteractions();
@@ -119,12 +117,18 @@ class FlagServiceTest {
     }
 
     @Test
+    void testEvaluate_UnknownEnvironment() {
+        assertThrows(UnknownEnvironmentException.class, () -> service.evaluate(flag.getName(), "123456", "pord"));
+
+        then(repo).shouldHaveNoMoreInteractions();
+    }
+
+    @Test
     void testCreate() {
         given(repo.existsByName(flag.getName())).willReturn(false);
-        Long id = 1L;
         given(repo.save(any(Flag.class))).willAnswer(inv -> {
             Flag f = inv.getArgument(0);
-            ReflectionTestUtils.setField(f, "id", id);
+            ReflectionTestUtils.setField(f, "id", ID);
             return f;
         });
 
@@ -132,7 +136,7 @@ class FlagServiceTest {
 
         then(repo).should().save(flagCaptor.capture());
         Flag saved = flagCaptor.getValue();
-        assertThat(saved.getId()).isEqualTo(id);
+        assertThat(saved.getId()).isEqualTo(ID);
         assertThat(saved.getName()).isEqualTo(flag.getName());
         assertThat(saved.getDescription()).isEqualTo(flag.getDescription());
         assertThat(saved.getEnvironments()).containsExactlyInAnyOrderElementsOf(flag.getEnvironments());
@@ -142,12 +146,19 @@ class FlagServiceTest {
     }
 
     @Test
+    void testCreate_UnknownEnvironment() {
+        assertThrows(
+                UnknownEnvironmentException.class,
+                () -> service.create(new FlagRequest("test-flag", null, false, Set.of("pord"), 0)));
+
+        then(repo).shouldHaveNoMoreInteractions();
+    }
+
+    @Test
     void testCreate_NameAlreadyExists() {
         given(repo.existsByName(flag.getName())).willReturn(true);
 
-        assertThrows(DuplicateFlagException.class,
-                () -> service.create(request)
-        );
+        assertThrows(DuplicateFlagException.class, () -> service.create(request));
 
         then(repo).shouldHaveNoMoreInteractions();
     }
@@ -155,10 +166,10 @@ class FlagServiceTest {
 
     @Test
     void testUpdate() {
-        given(repo.findById(flag.getId())).willReturn(Optional.of(flag));
+        given(repo.findById(ID)).willReturn(Optional.of(flag));
         given(repo.existsByName(updateRequest.name())).willReturn(false);
 
-        FlagResponse result = service.update(flag.getId(), updateRequest);
+        FlagResponse result = service.update(ID, updateRequest);
 
         assertThat(result.id()).isEqualTo(flag.getId());
         assertThat(result.name()).isEqualTo(updateRequest.name());
@@ -172,19 +183,28 @@ class FlagServiceTest {
 
     @Test
     void testUpdate_NoChanges() {
-        given(repo.findById(flag.getId())).willReturn(Optional.of(flag));
+        given(repo.findById(ID)).willReturn(Optional.of(flag));
 
-        FlagResponse result = service.update(flag.getId(), request);
+        FlagResponse result = service.update(ID, request);
 
         assertFlagEqualsResult(result);
         then(repo).shouldHaveNoMoreInteractions();
     }
 
     @Test
-    void testUpdate_NotFound() {
-        given(repo.findById(flag.getId())).willReturn(Optional.empty());
+    void testUpdate_UnknownEnvironment() {
+        assertThrows(
+                UnknownEnvironmentException.class,
+                () -> service.update(1L, new FlagRequest("test-flag", null, false, Set.of("pord"), 0)));
 
-        assertThrows(FlagNotFoundException.class, () -> service.update(flag.getId(), request));
+        then(repo).shouldHaveNoMoreInteractions();
+    }
+
+    @Test
+    void testUpdate_NotFound() {
+        given(repo.findById(ID)).willReturn(Optional.empty());
+
+        assertThrows(FlagNotFoundException.class, () -> service.update(ID, request));
 
         then(repo).shouldHaveNoMoreInteractions();
     }
@@ -192,18 +212,18 @@ class FlagServiceTest {
     @Test
     void testUpdate_NameAlreadyExists() {
         String name = "updated-name";
-        given(repo.findById(flag.getId())).willReturn(Optional.of(flag));
+        given(repo.findById(ID)).willReturn(Optional.of(flag));
         given(repo.existsByName(name)).willReturn(true);
 
         assertThrows(
                 DuplicateFlagException.class,
                 () -> service.update(
-                        flag.getId(),
+                        ID,
                         new FlagRequest(
                                 name,
                                 "Updated description",
                                 !flag.isEnabled(),
-                                Set.of("test"),
+                                Set.of("prod"),
                                 100
                         )
                 )
@@ -214,9 +234,9 @@ class FlagServiceTest {
 
     @Test
     void testDelete() {
-        service.delete(flag.getId());
+        service.delete(ID);
 
-        then(repo).should().deleteById(flag.getId());
+        then(repo).should().deleteById(ID);
         then(repo).shouldHaveNoMoreInteractions();
     }
 }

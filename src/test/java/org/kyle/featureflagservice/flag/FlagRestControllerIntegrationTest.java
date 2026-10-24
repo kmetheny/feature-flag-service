@@ -13,12 +13,14 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.ResultMatcher;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -29,6 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@TestPropertySource(properties = "flags.environments=dev,prod")
 class FlagRestControllerIntegrationTest {
 
     private Long saveFlag(String name) {
@@ -37,7 +40,7 @@ class FlagRestControllerIntegrationTest {
         flag.setEnabled(false);
         flag.setEnvironments(Set.of("dev"));
         flag.setRolloutPercentage(100);
-        return repo.save(flag).getId();
+        return Objects.requireNonNull(repo.save(flag).getId());
     }
 
     @SuppressWarnings("DataFlowIssue")
@@ -79,7 +82,7 @@ class FlagRestControllerIntegrationTest {
     }
 
     @SuppressWarnings("DataFlowIssue")
-    private static Stream<Arguments> badRequestsArgs() {
+    private static Stream<Arguments> badFlagRequestArgs() {
         String tooLongValue = "x".repeat(256);
         return Stream.of(
                 Arguments.of(request(null, null), "name"),
@@ -179,7 +182,7 @@ class FlagRestControllerIntegrationTest {
         Flag flag = new Flag();
         flag.setName(flagName);
         flag.setEnabled(true);
-        flag.setEnvironments(Set.of("test"));
+        flag.setEnvironments(Set.of("prod"));
         flag.setRolloutPercentage(100);
         repo.save(flag);
 
@@ -198,6 +201,22 @@ class FlagRestControllerIntegrationTest {
         getEvaluation(flagName, "123456", "dev")
                 .andExpect(problem(HttpStatus.NOT_FOUND))
                 .andExpect(jsonPath("$.detail").value("Flag not found: " + flagName));
+    }
+
+    @Test
+    void testEvaluateFlag_UnknownEnvironment() throws Exception {
+        String flagName = "test-flag";
+        String environment = "pord";
+        Flag flag = new Flag();
+        flag.setName(flagName);
+        flag.setEnabled(true);
+        flag.setEnvironments(Set.of(environment));
+        flag.setRolloutPercentage(100);
+        repo.save(flag);
+
+        getEvaluation(flagName, "123456", environment)
+                .andExpect(problem(HttpStatus.BAD_REQUEST))
+                .andExpect(jsonPath("$.detail").value("Unknown environments: [" + environment + "]"));
     }
 
     @Test
@@ -244,11 +263,22 @@ class FlagRestControllerIntegrationTest {
     }
 
     @ParameterizedTest
-    @MethodSource("badRequestsArgs")
+    @MethodSource("badFlagRequestArgs")
     void testCreateFlag_BadRequest(FlagRequest request, String invalidField) throws Exception {
         postFlag(request)
                 .andExpect(problem(HttpStatus.BAD_REQUEST))
                 .andExpect(jsonPath("$.errors['" + invalidField + "']").exists());
+
+        assertThat(repo.count()).isEqualTo(0);
+    }
+
+    @Test
+    void testCreateFlag_UnknownEnvironment() throws Exception {
+        String environment = "pord";
+
+        postFlag(new FlagRequest("test-flag", null, false, Set.of(environment), 0))
+                .andExpect(problem(HttpStatus.BAD_REQUEST))
+                .andExpect(jsonPath("$.detail").value("Unknown environments: [" + environment + "]"));
 
         assertThat(repo.count()).isEqualTo(0);
     }
@@ -266,7 +296,7 @@ class FlagRestControllerIntegrationTest {
 
         String flagName = "updated-test-flag";
         String flagDescription = "This is an updated test flag";
-        String environment = "test";
+        String environment = "prod";
         boolean enabled = true;
         int rolloutPercentage = 50;
 
@@ -328,8 +358,23 @@ class FlagRestControllerIntegrationTest {
                 .andExpect(jsonPath("$.detail").value("Flag not found: " + id));
     }
 
+    @Test
+    void testUpdateFlag_UnknownEnvironment() throws Exception {
+        String name = "test-flag";
+        Long id = saveFlag(name);
+        String environment = "pord";
+
+        putFlag(id, new FlagRequest("updated-name", null, false, Set.of(environment), 0))
+                .andExpect(problem(HttpStatus.BAD_REQUEST))
+                .andExpect(jsonPath("$.detail").value("Unknown environments: [" + environment + "]"));
+
+        assertThat(repo.count()).isEqualTo(1);
+        Flag flag = repo.findById(id).orElseThrow();
+        assertThat(flag.getName()).isEqualTo(name);
+    }
+
     @ParameterizedTest
-    @MethodSource("badRequestsArgs")
+    @MethodSource("badFlagRequestArgs")
     void testUpdateFlag_BadRequest(FlagRequest request, String invalidField) throws Exception {
         String name = "test-flag";
         Long id = saveFlag(name);

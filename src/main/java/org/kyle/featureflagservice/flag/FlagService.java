@@ -3,13 +3,15 @@ package org.kyle.featureflagservice.flag;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
+
 
 @Service
 @Transactional
 public class FlagService {
+
+    private final FlagRepository repo;
+    private final FlagProperties properties;
 
     private static void applyRequest(Flag flag, FlagRequest request) {
         flag.setName(request.name());
@@ -19,10 +21,19 @@ public class FlagService {
         flag.setRolloutPercentage(request.rolloutPercentage());
     }
 
-    private final FlagRepository repo;
+    private void requireKnownEnvironments(Collection<String> environments) {
+        List<String> unknownEnvironments = environments.stream()
+                .filter(environment -> !properties.environments().contains(environment))
+                .toList();
 
-    public FlagService(FlagRepository repo) {
+        if (!unknownEnvironments.isEmpty()) {
+            throw new UnknownEnvironmentException(unknownEnvironments);
+        }
+    }
+
+    public FlagService(FlagRepository repo, FlagProperties properties) {
         this.repo = repo;
+        this.properties = properties;
     }
 
     @Transactional(readOnly = true)
@@ -36,16 +47,21 @@ public class FlagService {
     }
 
     @Transactional(readOnly = true)
-    public EvaluationResponse evaluate(String name, String userId, String env) {
+    public EvaluationResponse evaluate(String name, String userId, String environment) {
+        requireKnownEnvironments(Set.of(environment));
+
         Flag flag = repo.findByName(name).orElseThrow(() -> new FlagNotFoundException(name));
 
-        return new EvaluationResponse(name, userId, env, FlagEvaluator.isEnabledFor(flag, userId, env));
+        return new EvaluationResponse(name, userId, environment, FlagEvaluator.isEnabledFor(flag, userId, environment));
     }
 
     public FlagResponse create(FlagRequest request) {
+        requireKnownEnvironments(request.environments());
+
         if (repo.existsByName(request.name())) {
             throw new DuplicateFlagException(request.name());
         }
+
         Flag flag = new Flag();
         applyRequest(flag, request);
 
@@ -53,10 +69,14 @@ public class FlagService {
     }
 
     public FlagResponse update(Long id, FlagRequest request) {
+        requireKnownEnvironments(request.environments());
+
         Flag flag = find(id);
+
         if (!Objects.equals(flag.getName(), request.name()) && repo.existsByName(request.name())) {
             throw new DuplicateFlagException(request.name());
         }
+
         applyRequest(flag, request);
 
         return FlagResponse.from(flag);

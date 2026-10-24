@@ -3,6 +3,7 @@ package org.kyle.featureflagservice;
 import org.jspecify.annotations.Nullable;
 import org.kyle.featureflagservice.flag.DuplicateFlagException;
 import org.kyle.featureflagservice.flag.FlagNotFoundException;
+import org.kyle.featureflagservice.flag.UnknownEnvironmentException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -31,6 +32,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler
     ProblemDetail handleDuplicate(DuplicateFlagException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    @ExceptionHandler
+    ProblemDetail handleUnknownEnvironment(UnknownEnvironmentException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 
     @ExceptionHandler
