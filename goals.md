@@ -60,9 +60,9 @@ and answers "is flag X on for user Y in environment Z?"
 ### 7. Testing
 
 - [x] Service: JUnit 5 + Mockito, no Spring context
-- [ ] Controller: `@WebMvcTest` + MockMvc
+- [x] Controller: `@WebMvcTest` + MockMvc
 - [ ] Repository: `@DataJpaTest`
-- [ ] One `@SpringBootTest` integration test
+- [x] One `@SpringBootTest` integration test
 - [ ] Optional: Testcontainers for a real database
 
 ### 8. Ops polish

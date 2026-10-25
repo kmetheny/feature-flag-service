@@ -25,14 +25,14 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.hamcrest.Matchers.*;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = "flags.environments=dev,prod")
-class FlagRestControllerIntegrationTest {
+class FlagIntegrationTest {
 
     private Long saveFlag(String name) {
         Flag flag = new Flag();
@@ -82,7 +82,7 @@ class FlagRestControllerIntegrationTest {
     }
 
     @SuppressWarnings("DataFlowIssue")
-    private static Stream<Arguments> badFlagRequestArgs() {
+    private static Stream<Arguments> badFlagRequestBodyArgs() {
         String tooLongValue = "x".repeat(256);
         return Stream.of(
                 Arguments.of(request(null, null), "name"),
@@ -107,7 +107,7 @@ class FlagRestControllerIntegrationTest {
     private FlagRepository repo;
 
     @Autowired
-    ObjectMapper mapper;
+    private ObjectMapper mapper;
 
     @BeforeEach
     void setUp() {
@@ -263,7 +263,7 @@ class FlagRestControllerIntegrationTest {
     }
 
     @ParameterizedTest
-    @MethodSource("badFlagRequestArgs")
+    @MethodSource("badFlagRequestBodyArgs")
     void testCreateFlag_BadRequest(FlagRequest request, String invalidField) throws Exception {
         postFlag(request)
                 .andExpect(problem(HttpStatus.BAD_REQUEST))
@@ -374,7 +374,7 @@ class FlagRestControllerIntegrationTest {
     }
 
     @ParameterizedTest
-    @MethodSource("badFlagRequestArgs")
+    @MethodSource("badFlagRequestBodyArgs")
     void testUpdateFlag_BadRequest(FlagRequest request, String invalidField) throws Exception {
         String name = "test-flag";
         Long id = saveFlag(name);
