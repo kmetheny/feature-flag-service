@@ -61,7 +61,7 @@ and answers "is flag X on for user Y in environment Z?"
 
 - [x] Service: JUnit 5 + Mockito, no Spring context
 - [x] Controller: `@WebMvcTest` + MockMvc
-- [ ] Repository: `@DataJpaTest`
+- [x] Repository: `@DataJpaTest`
 - [x] One `@SpringBootTest` integration test
 - [ ] Optional: Testcontainers for a real database
 
@@ -104,5 +104,5 @@ and answers "is flag X on for user Y in environment Z?"
 
 - [ ] Public GitHub repo
 - [ ] README explaining the design and how to run it
-- [ ] Real tests that pass
+- [x] Real tests that pass
 - [ ] Dockerfile
