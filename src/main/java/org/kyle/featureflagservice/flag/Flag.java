@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
+import org.hibernate.annotations.BatchSize;
 import org.jspecify.annotations.Nullable;
 
 import java.util.HashSet;
@@ -25,6 +26,7 @@ public class Flag {
     private String description;
 
     @ElementCollection
+    @BatchSize(size = 100)
     @CollectionTable(
             name = "flag_environments",
             joinColumns = @JoinColumn(name = "flag_id")

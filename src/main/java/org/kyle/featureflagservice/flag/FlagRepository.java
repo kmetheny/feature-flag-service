@@ -1,16 +1,11 @@
 package org.kyle.featureflagservice.flag;
 
 import org.springframework.data.jpa.repository.EntityGraph;
-import org.springframework.data.repository.ListCrudRepository;
+import org.springframework.data.jpa.repository.JpaRepository;
 
-import java.util.List;
 import java.util.Optional;
 
-public interface FlagRepository extends ListCrudRepository<Flag, Long> {
-
-    @Override
-    @EntityGraph(attributePaths = "environments")
-    List<Flag> findAll();
+public interface FlagRepository extends JpaRepository<Flag, Long> {
 
     @Override
     @EntityGraph(attributePaths = "environments")

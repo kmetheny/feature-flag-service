@@ -7,6 +7,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.*;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
@@ -71,14 +72,25 @@ class FlagServiceTest {
 
     @Test
     void testFindAll() {
-        given(repo.findAll()).willReturn(List.of(flag));
+        Pageable pageRequest = PageRequest.of(2, 5);
+        Pageable stable = PageRequest.of(
+                pageRequest.getPageNumber(),
+                pageRequest.getPageSize(),
+                Sort.by("id")
+        );
+        Page<Flag> page = new PageImpl<>(List.of(flag), pageRequest, 11);
+        given(repo.findAll(stable)).willReturn(page);
 
-        List<FlagResponse> result = service.findAll();
+        Page<FlagResponse> result = service.findAll(pageRequest);
 
         assertThat(result).hasSize(1);
-        FlagResponse flagResponse = result.getFirst();
+        FlagResponse flagResponse = result.getContent().getFirst();
 
         assertFlagEqualsResult(flagResponse);
+        assertThat(result.getNumber()).isEqualTo(page.getNumber());
+        assertThat(result.getSize()).isEqualTo(page.getSize());
+        assertThat(result.getTotalElements()).isEqualTo(page.getTotalElements());
+
         then(repo).shouldHaveNoMoreInteractions();
     }
 

@@ -73,6 +73,20 @@ and answers "is flag X on for user Y in environment Z?"
 - [ ] Liveness / readiness probes (`/actuator/health/liveness`, `/actuator/health/readiness`)
 - [ ] Optional: deploy to a local cluster with kind or minikube
 
+### 9. Pagination, filtering and sorting
+
+- [x] `GET /flags?page=0&size=20&sort=name,asc` with a `Pageable` controller parameter
+- [x] Return a stable page DTO (content plus page metadata), not a serialized `PageImpl`
+- [x] Cap page size (`spring.data.web.pageable.max-page-size`) and set a default sort
+- [x] Allow-list sortable fields; an unknown sort property returns 400, not 500
+- [ ] Filters: `enabled`, `env` and partial `name` match, combinable, via `JpaSpecificationExecutor`
+- [ ] Tests: `@WebMvcTest` for parameter binding and 400s, `@DataJpaTest` for specifications and page boundaries
+
+> **Notes:** Paging a query that fetch-joins a collection (your `@EntityGraph` on `environments`) makes Hibernate
+> apply the limit in memory and log HHH90003004. Page the IDs first and then fetch those flags with the graph, or use
+> `@BatchSize` for the paged query. Filtering on `environments` joins the collection table, so make the query distinct.
+> Decide how this fits with milestone 6: cached pages are easy to serve stale after an update.
+
 ---
 
 ## Stretch goals

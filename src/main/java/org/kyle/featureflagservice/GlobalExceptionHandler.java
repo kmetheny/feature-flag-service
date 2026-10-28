@@ -3,6 +3,7 @@ package org.kyle.featureflagservice;
 import org.jspecify.annotations.Nullable;
 import org.kyle.featureflagservice.flag.DuplicateFlagException;
 import org.kyle.featureflagservice.flag.FlagNotFoundException;
+import org.kyle.featureflagservice.flag.InvalidSortException;
 import org.kyle.featureflagservice.flag.UnknownEnvironmentException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +37,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler
     ProblemDetail handleUnknownEnvironment(UnknownEnvironmentException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
+    @ExceptionHandler
+    ProblemDetail handleInvalidSort(InvalidSortException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 

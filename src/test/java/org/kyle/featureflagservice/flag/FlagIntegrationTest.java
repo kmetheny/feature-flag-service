@@ -13,19 +13,24 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.ResultMatcher;
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -33,6 +38,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = "flags.environments=dev,prod")
 class FlagIntegrationTest {
+
+    private record PageResponse<T>(List<T> content) {
+    }
 
     private Long saveFlag(String name) {
         Flag flag = new Flag();
@@ -116,18 +124,37 @@ class FlagIntegrationTest {
 
     @Test
     void testGetFlags() throws Exception {
-        String flagName = "test-flag";
-        Long id = saveFlag(flagName);
+        String flagNameFormat = "test-flag-%05d";
+        int numElements = 100;
+        // Insert in reverse order to test sorting
+        for (int i = numElements - 1; i >= 0; i--) {
+            saveFlag(String.format(flagNameFormat, i));
+        }
 
-        mvc.perform(get("/flags").accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(jsonPath("$[0].id").value(id))
-                .andExpect(jsonPath("$[0].name").value(flagName))
-                .andExpect(jsonPath("$[0].environments[0]").value("dev"))
-                .andExpect(jsonPath("$[0].rolloutPercentage").value(100));
+        Pattern nextUriPattern = Pattern.compile("<([^>]*)>\\s*;\\s*rel=\"next\"");
+        Matcher m = nextUriPattern.matcher("</flags>; rel=\"next\"");
+        List<FlagResponse> flags = new ArrayList<>(100);
+        while (m.find()) {
+            String nextUri = m.group(1);
+            MockHttpServletResponse response = mvc.perform(get(nextUri).accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse();
+
+            String json = response.getContentAsString();
+            PageResponse<FlagResponse> flagPage = mapper.readValue(json, new TypeReference<>() {
+            });
+            flags.addAll(flagPage.content());
+
+            String linkHeader = response.getHeader(HttpHeaders.LINK);
+            assertThat(linkHeader).isNotNull();
+            m = nextUriPattern.matcher(linkHeader);
+        }
+
+        assertThat(flags).extracting(FlagResponse::name)
+                .hasSize(numElements)
+                .doesNotHaveDuplicates()
+                .isSorted();
     }
 
     @Test

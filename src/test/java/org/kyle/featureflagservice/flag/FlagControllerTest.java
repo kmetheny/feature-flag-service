@@ -8,18 +8,27 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultMatcher;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.web.util.UriComponents;
+import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.ObjectMapper;
 
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
@@ -45,6 +54,27 @@ class FlagControllerTest {
     private FlagRequest request;
     private EvaluationResponse evaluationResponse;
     private FlagRequest unknownEnvironmentRequest;
+
+    private static void checkUris(String linkHeader, List<String> sortParams, Page<?> page, Map<String, Integer> relPages) {
+        Map<String, UriComponents> links = new HashMap<>();
+        Matcher m = Pattern.compile("<([^>]*)>\\s*;\\s*rel=\"([^\"]*)\"").matcher(linkHeader);
+        while (m.find()) {
+            links.put(m.group(2), UriComponentsBuilder.fromUriString(m.group(1)).build());
+        }
+        assertThat(links).containsOnlyKeys(relPages.keySet());
+
+        for (Map.Entry<String, Integer> relPage : relPages.entrySet()) {
+            UriComponents uri = links.get(relPage.getKey());
+
+            assertThat(uri.getPath()).isEqualTo("/flags");
+            assertThat(uri.getQueryParams().getFirst("size"))
+                    .isEqualTo(String.valueOf(page.getSize()));
+            assertThat(uri.getQueryParams().getFirst("page"))
+                    .isEqualTo(String.valueOf(relPage.getValue()));
+            assertThat(uri.getQueryParams().get("sort")).isEqualTo(sortParams);
+
+        }
+    }
 
     private static Stream<Arguments> badFlagRequestJsonArgs() {
         return Stream.of(
@@ -136,6 +166,77 @@ class FlagControllerTest {
         };
     }
 
+    private ResultMatcher pageModel(Page<?> page) {
+        return result -> {
+            status().isOk().match(result);
+            header().exists(HttpHeaders.LINK).match(result);
+            jsonPath("$.content").isArray().match(result);
+            jsonPath("$.content", hasSize(page.getNumberOfElements())).match(result);
+            if (!page.isEmpty()) {
+                responseBodyMatches("$.content[0]").match(result);
+            }
+            jsonPath("$.page.size").value(page.getSize()).match(result);
+            jsonPath("$.page.number").value(page.getNumber()).match(result);
+            jsonPath("$.page.totalElements").value(page.getTotalElements()).match(result);
+            jsonPath("$.page.totalPages").value(page.getTotalPages()).match(result);
+        };
+    }
+
+    private static Stream<Arguments> findPageArgs() {
+        PageRequest defaultRequest = PageRequest.of(0, 10, Sort.Direction.ASC, "name");
+
+        return Stream.of(
+                Arguments.argumentSet("Default params",
+                        defaultRequest,
+                        100, null, null,
+                        Map.of("first", 0, "next", 1, "last", 9)),
+                Arguments.argumentSet("Sort descending",
+                        PageRequest.of(0, 10, Sort.Direction.DESC, "name"),
+                        100, null, null,
+                        Map.of("first", 0, "next", 1, "last", 9)),
+                Arguments.argumentSet("Multiple sorts",
+                        PageRequest.of(0, 10, Sort.Direction.ASC, "name", "description"),
+                        100, null, null,
+                        Map.of("first", 0, "next", 1, "last", 9)),
+                Arguments.argumentSet("Page size over cap",
+                        PageRequest.of(0, 200, Sort.Direction.ASC, "name"),
+                        100, null, "500",
+                        Map.of("first", 0, "last", 0)),
+                Arguments.argumentSet("Invalid page number",
+                        defaultRequest,
+                        100, "abc", null,
+                        Map.of("first", 0, "next", 1, "last", 9)),
+                Arguments.argumentSet("Invalid page size",
+                        defaultRequest,
+                        100, null, "abc",
+                        Map.of("first", 0, "next", 1, "last", 9)),
+                Arguments.argumentSet("Last page",
+                        PageRequest.of(9, 10, Sort.Direction.ASC, "name"),
+                        100, "9", null,
+                        Map.of("first", 0, "prev", 8, "last", 9)
+                ),
+                Arguments.argumentSet("Only page",
+                        PageRequest.of(0, 100, Sort.Direction.ASC, "name"),
+                        100, null, "100",
+                        Map.of("first", 0, "last", 0)
+                ),
+                Arguments.argumentSet("Empty page",
+                        defaultRequest,
+                        0, null, null,
+                        Map.of("first", 0, "last", 0)
+                ),
+                Arguments.argumentSet("Past last page",
+                        PageRequest.of(10, 10, Sort.Direction.ASC, "name"),
+                        20, "10", "10",
+                        Map.of("first", 0, "prev", 1, "last", 1)
+                ),
+                Arguments.argumentSet("Past end of empty",
+                        PageRequest.of(3, 10, Sort.Direction.ASC, "name"),
+                        0, "3", null,
+                        Map.of("first", 0, "prev", 0, "last", 0))
+        );
+    }
+
     @BeforeEach
     void setUp() {
         response = new FlagResponse(
@@ -167,15 +268,63 @@ class FlagControllerTest {
         );
     }
 
-    @Test
-    void testGetFlags() throws Exception {
-        given(service.findAll()).willReturn(List.of(response));
+    @ParameterizedTest
+    @MethodSource("findPageArgs")
+    void testGetFlags(PageRequest pageRequest, int total, @Nullable String pageNumber, @Nullable String pageSize, Map<String, Integer> relPages) throws Exception {
+        int offset = pageRequest.getPageSize() * pageRequest.getPageNumber();
+        int count = Math.clamp(total - offset, 0, pageRequest.getPageSize());
+        List<FlagResponse> content = Collections.nCopies(count, response);
+        Page<FlagResponse> page = new PageImpl<>(content, pageRequest, total);
+        given(service.findAll(pageRequest)).willReturn(page);
 
-        mvc.perform(get("/flags").accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(responseBodyMatches("$[0]"));
+        var requestBuilder = get("/flags").accept(MediaType.APPLICATION_JSON);
+        if (pageNumber != null) {
+            requestBuilder.queryParam("page", pageNumber);
+        }
+        if (pageSize != null) {
+            requestBuilder.queryParam("size", pageSize);
+        }
+        List<String> sortParams = pageRequest.getSort()
+                .stream().map(
+                        sortOrder -> sortOrder.getProperty() + "," + sortOrder.getDirection().toString().toLowerCase()
+                )
+                .toList();
+        for (String sortParam : sortParams) {
+            requestBuilder.queryParam("sort", sortParam);
+        }
+
+        String linkHeader = mvc.perform(requestBuilder)
+                .andExpect(pageModel(page))
+                .andReturn().getResponse().getHeader(HttpHeaders.LINK);
+
+        assertThat(linkHeader).isNotNull();
+        checkUris(linkHeader, sortParams, page, relPages);
+    }
+
+    @Test
+    void testGetFlags_InvalidSort() throws Exception {
+        String invalidSort = "email";
+
+        mvc.perform(get("/flags")
+                        .accept(MediaType.APPLICATION_JSON)
+                        .queryParam("sort", invalidSort))
+                .andExpect(problem(HttpStatus.BAD_REQUEST))
+                .andExpect(jsonPath("$.detail").value("Invalid sort: " + invalidSort));
+
+        then(service).shouldHaveNoInteractions();
+    }
+
+    @Test
+    void testGetFlags_InvalidDirection() throws Exception {
+        String invalidDir = "sideways";
+
+        mvc.perform(get("/flags")
+                        .accept(MediaType.APPLICATION_JSON)
+                        .queryParam("sort", "name," + invalidDir))
+                .andExpect(problem(HttpStatus.BAD_REQUEST))
+                .andExpect(jsonPath("$.detail").value("Invalid sort: " + invalidDir));
+
+        then(service).shouldHaveNoInteractions();
     }
 
     @Test
