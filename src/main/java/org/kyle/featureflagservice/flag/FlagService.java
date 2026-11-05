@@ -11,10 +11,10 @@ import java.util.*;
 
 
 @Service
-@Transactional
 public class FlagService {
 
     private final FlagRepository repo;
+    private final FlagLookup flagLookup;
     private final FlagProperties properties;
 
     private static void applyRequest(Flag flag, FlagRequest request) {
@@ -35,8 +35,9 @@ public class FlagService {
         }
     }
 
-    public FlagService(FlagRepository repo, FlagProperties properties) {
+    public FlagService(FlagRepository repo, FlagLookup flagLookup, FlagProperties properties) {
         this.repo = repo;
+        this.flagLookup = flagLookup;
         this.properties = properties;
     }
 
@@ -50,20 +51,19 @@ public class FlagService {
         return repo.findAll(stable).map(FlagResponse::from);
     }
 
-    @Transactional(readOnly = true)
     public FlagResponse get(Long id) {
-        return FlagResponse.from(find(id));
+        return flagLookup.getById(id);
     }
 
-    @Transactional(readOnly = true)
     public EvaluationResponse evaluate(String name, String userId, String environment) {
         requireKnownEnvironments(Set.of(environment));
 
-        Flag flag = repo.findByName(name).orElseThrow(() -> new FlagNotFoundException(name));
+        FlagResponse flagResponse = flagLookup.getByName(name);
 
-        return new EvaluationResponse(name, userId, environment, FlagEvaluator.isEnabledFor(flag, userId, environment));
+        return new EvaluationResponse(name, userId, environment, FlagEvaluator.isEnabledFor(flagResponse, userId, environment));
     }
 
+    @Transactional
     public FlagResponse create(FlagRequest request) {
         requireKnownEnvironments(request.environments());
 
@@ -77,10 +77,13 @@ public class FlagService {
         return FlagResponse.from(repo.save(flag));
     }
 
+    @Transactional
     public FlagResponse update(Long id, FlagRequest request) {
         requireKnownEnvironments(request.environments());
 
-        Flag flag = find(id);
+        Flag flag = repo.findById(id).orElseThrow(() -> new FlagNotFoundException(id));
+
+        String oldName = flag.getName();
 
         if (!Objects.equals(flag.getName(), request.name()) && repo.existsByName(request.name())) {
             throw new DuplicateFlagException(request.name());
@@ -88,14 +91,16 @@ public class FlagService {
 
         applyRequest(flag, request);
 
+        flagLookup.evict(id, oldName);
+
         return FlagResponse.from(flag);
     }
 
+    @Transactional
     public void delete(Long id) {
-        repo.deleteById(id);
-    }
-
-    private Flag find(Long id) {
-        return repo.findById(id).orElseThrow(() -> new FlagNotFoundException(id));
+        repo.findById(id).ifPresent(flag -> {
+            repo.delete(flag);
+            flagLookup.evict(id, flag.getName());
+        });
     }
 }

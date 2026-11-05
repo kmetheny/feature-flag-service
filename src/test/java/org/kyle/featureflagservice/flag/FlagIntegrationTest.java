@@ -10,11 +10,14 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
@@ -31,6 +34,8 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -38,6 +43,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = "flags.environments=dev,prod")
 class FlagIntegrationTest {
+
+    private Cache flagsByIdCache;
+    private Cache flagsByNameCache;
 
     private record PageResponse<T>(List<T> content) {
     }
@@ -93,26 +101,62 @@ class FlagIntegrationTest {
     private static Stream<Arguments> badFlagRequestBodyArgs() {
         String tooLongValue = "x".repeat(256);
         return Stream.of(
-                Arguments.of(request(null, null), "name"),
-                Arguments.of(request("", null), "name"),
-                Arguments.of(request("Test-name", null), "name"),
-                Arguments.of(request(tooLongValue, null), "name"),
-                Arguments.of(request("test-name", tooLongValue), "description"),
-                Arguments.of(new FlagRequest("test-name", null, true, Set.of("dev"), -1), "rolloutPercentage"),
-                Arguments.of(new FlagRequest("test-name", null, true, Set.of("dev"), 101), "rolloutPercentage"),
-                Arguments.of(new FlagRequest("test-name", null, true, Set.of("dev"), null), "rolloutPercentage"),
-                Arguments.of(new FlagRequest("test-name", null, true, null, 50), "environments"),
-                Arguments.of(new FlagRequest("test-name", null, true, Set.of(""), 50), "environments[]"),
-                Arguments.of(new FlagRequest("test-name", null, true, Set.of("Dev"), 50), "environments[]"),
-                Arguments.of(new FlagRequest("test-name", null, null, Set.of("dev"), 50), "enabled")
+                Arguments.argumentSet("Null name",
+                        request(null, null), "name"),
+                Arguments.argumentSet("Empty name",
+                        request("", null), "name"),
+                Arguments.argumentSet("Capitalized letter in name",
+                        request("Test-name", null), "name"),
+                Arguments.argumentSet("Too long name",
+                        request(tooLongValue, null), "name"),
+                Arguments.argumentSet("Too long description",
+                        request("test-name", tooLongValue), "description"),
+                Arguments.argumentSet("Negative rolloutPercentage",
+                        new FlagRequest("test-name", null, true, Set.of("dev"), -1),
+                        "rolloutPercentage"),
+                Arguments.argumentSet("rolloutPercentage > 100",
+                        new FlagRequest("test-name", null, true, Set.of("dev"), 101),
+                        "rolloutPercentage"),
+                Arguments.argumentSet("Null rolloutPercentage",
+                        new FlagRequest("test-name", null, true, Set.of("dev"), null),
+                        "rolloutPercentage"),
+                Arguments.argumentSet("No environments",
+                        new FlagRequest("test-name", null, true, null, 50),
+                        "environments"),
+                Arguments.argumentSet("Empty environment",
+                        new FlagRequest("test-name", null, true, Set.of(""), 50),
+                        "environments[]"),
+                Arguments.argumentSet("Capitalized letter in environment",
+                        new FlagRequest("test-name", null, true, Set.of("Dev"), 50),
+                        "environments[]"),
+                Arguments.argumentSet("Null enabled",
+                        new FlagRequest("test-name", null, null, Set.of("dev"), 50),
+                        "enabled")
         );
+    }
+
+    private long cacheFlag(String name) throws Exception {
+        long id = saveFlag(name);
+
+        mvc.perform(get("/flags/{id}", id).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().is2xxSuccessful());
+        getEvaluation(name, "test-user", "dev")
+                .andExpect(status().is2xxSuccessful());
+
+        assertThat(flagsByIdCache.get(id)).isNotNull();
+        assertThat(flagsByNameCache.get(name)).isNotNull();
+
+        return id;
     }
 
     @Autowired
     private MockMvc mvc;
 
-    @Autowired
+    @MockitoSpyBean
     private FlagRepository repo;
+
+    @Autowired
+    private CacheManager cacheManager;
 
     @Autowired
     private ObjectMapper mapper;
@@ -120,6 +164,10 @@ class FlagIntegrationTest {
     @BeforeEach
     void setUp() {
         repo.deleteAll();
+        cacheManager.getCacheNames().forEach(
+                cache -> Objects.requireNonNull(cacheManager.getCache(cache)).invalidate());
+        flagsByIdCache = Objects.requireNonNull(cacheManager.getCache(FlagLookup.FLAGS_BY_ID_CACHE));
+        flagsByNameCache = Objects.requireNonNull(cacheManager.getCache(FlagLookup.FLAGS_BY_NAME_CACHE));
     }
 
     @Test
@@ -169,6 +217,22 @@ class FlagIntegrationTest {
                 .andExpect(jsonPath("$.name").value(flagName))
                 .andExpect(jsonPath("$.environments[0]").value("dev"))
                 .andExpect(jsonPath("$.rolloutPercentage").value(100));
+
+        assertThat(flagsByIdCache.get(id)).isNotNull();
+    }
+
+    @Test
+    void testGetFlagById_UsesCache() throws Exception {
+        String flagName = "test-flag";
+        Long id = saveFlag(flagName);
+
+        mvc.perform(get("/flags/{id}", id).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().is2xxSuccessful());
+        mvc.perform(get("/flags/{id}", id).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().is2xxSuccessful());
+
+        verify(repo, times(1)).findById(id);
+        assertThat(flagsByIdCache.get(id)).isNotNull();
     }
 
     @Test
@@ -178,48 +242,72 @@ class FlagIntegrationTest {
         mvc.perform(get("/flags/{id}", flagId).accept(MediaType.APPLICATION_JSON))
                 .andExpect(problem(HttpStatus.NOT_FOUND))
                 .andExpect(jsonPath("$.detail").value("Flag not found: " + flagId));
+
+        assertThat(flagsByIdCache.get(flagId)).isNull();
     }
 
     @Test
     void testEvaluateFlag_On() throws Exception {
-        String flagName = "test-flag";
         String environment = "dev";
         String userId = "test-user";
+
         Flag flag = new Flag();
-        flag.setName(flagName);
+        flag.setName("test-flag");
         flag.setEnvironments(Set.of(environment));
         flag.setEnabled(true);
         flag.setRolloutPercentage(100);
         repo.save(flag);
 
-        getEvaluation(flagName, userId, environment)
+        getEvaluation(flag.getName(), userId, environment)
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.flag").value(flagName))
+                .andExpect(jsonPath("$.flag").value(flag.getName()))
                 .andExpect(jsonPath("$.userId").value(userId))
                 .andExpect(jsonPath("$.environment").value(environment))
                 .andExpect(jsonPath("$.enabled").value(true));
+
+        assertThat(flagsByNameCache.get(flag.getName())).isNotNull();
     }
 
     @Test
     void testEvaluateFlag_Off() throws Exception {
-        String flagName = "test-flag";
         String environment = "dev";
         String userId = "test-user";
+
         Flag flag = new Flag();
-        flag.setName(flagName);
+        flag.setName("test-flag");
         flag.setEnabled(true);
         flag.setEnvironments(Set.of("prod"));
         flag.setRolloutPercentage(100);
         repo.save(flag);
 
-        getEvaluation(flagName, userId, environment)
+        getEvaluation(flag.getName(), userId, environment)
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.flag").value(flagName))
+                .andExpect(jsonPath("$.flag").value(flag.getName()))
                 .andExpect(jsonPath("$.userId").value(userId))
                 .andExpect(jsonPath("$.environment").value(environment))
                 .andExpect(jsonPath("$.enabled").value(false));
+
+        assertThat(flagsByNameCache.get(flag.getName())).isNotNull();
+    }
+
+    @Test
+    void testEvaluateFlag_UsesCache() throws Exception {
+        String environment = "dev";
+        String userId = "test-user";
+
+        Flag flag = new Flag();
+        flag.setName("test-flag");
+        flag.setEnvironments(Set.of(environment));
+        flag.setEnabled(true);
+        flag.setRolloutPercentage(100);
+        repo.save(flag);
+
+        getEvaluation(flag.getName(), userId, environment).andExpect(status().isOk());
+        getEvaluation(flag.getName(), userId, environment).andExpect(status().isOk());
+
+        verify(repo, times(1)).findByName(flag.getName());
     }
 
     @Test
@@ -228,20 +316,21 @@ class FlagIntegrationTest {
         getEvaluation(flagName, "123456", "dev")
                 .andExpect(problem(HttpStatus.NOT_FOUND))
                 .andExpect(jsonPath("$.detail").value("Flag not found: " + flagName));
+
+        assertThat(flagsByNameCache.get(flagName)).isNull();
     }
 
     @Test
     void testEvaluateFlag_UnknownEnvironment() throws Exception {
-        String flagName = "test-flag";
         String environment = "pord";
         Flag flag = new Flag();
-        flag.setName(flagName);
+        flag.setName("test-flag");
         flag.setEnabled(true);
         flag.setEnvironments(Set.of(environment));
         flag.setRolloutPercentage(100);
         repo.save(flag);
 
-        getEvaluation(flagName, "123456", environment)
+        getEvaluation(flag.getName(), "123456", environment)
                 .andExpect(problem(HttpStatus.BAD_REQUEST))
                 .andExpect(jsonPath("$.detail").value("Unknown environments: [" + environment + "]"));
     }
@@ -421,6 +510,24 @@ class FlagIntegrationTest {
     }
 
     @Test
+    void testUpdateFlag_EvictsCache() throws Exception {
+        String flagToUpdateName = "test-flag-to-update";
+        String flagToKeepName = "test-flag-to-keep";
+        long flagToUpdateId = cacheFlag(flagToUpdateName);
+        long flagToKeepId = cacheFlag(flagToKeepName);
+
+        FlagRequest updateRequest = new FlagRequest("test-flag-updated", null, false, Set.of("dev"), 0);
+
+        putFlag(flagToUpdateId, updateRequest)
+                .andExpect(status().is2xxSuccessful());
+
+        assertThat(flagsByIdCache.get(flagToUpdateId)).isNull();
+        assertThat(flagsByNameCache.get(flagToUpdateName)).isNull();
+        assertThat(flagsByIdCache.get(flagToKeepId)).isNotNull();
+        assertThat(flagsByNameCache.get(flagToKeepName)).isNotNull();
+    }
+
+    @Test
     void testDeleteFlag() throws Exception {
         Long id = saveFlag("test-flag");
 
@@ -434,6 +541,22 @@ class FlagIntegrationTest {
     void testDeleteFlag_MissingId() throws Exception {
         mvc.perform(delete("/flags/9999"))
                 .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void testDeleteFlag_EvictsCache() throws Exception {
+        String flagToDeleteName = "test-flag-to-delete";
+        String flagToKeepName = "test-flag-to-keep";
+        long flagToDeleteId = cacheFlag(flagToDeleteName);
+        long flagToKeepId = cacheFlag(flagToKeepName);
+
+        mvc.perform(delete("/flags/{id}", flagToDeleteId).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().is2xxSuccessful());
+
+        assertThat(flagsByIdCache.get(flagToDeleteId)).isNull();
+        assertThat(flagsByNameCache.get(flagToDeleteName)).isNull();
+        assertThat(flagsByIdCache.get(flagToKeepId)).isNotNull();
+        assertThat(flagsByNameCache.get(flagToKeepName)).isNotNull();
     }
 
 }

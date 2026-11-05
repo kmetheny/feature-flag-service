@@ -53,9 +53,9 @@ and answers "is flag X on for user Y in environment Z?"
 
 ### 6. Caching
 
-- [ ] `@Cacheable` on flag lookups
-- [ ] `@CacheEvict` on updates and deletes
-- [ ] Verify eviction actually works
+- [x] `@Cacheable` on flag lookups
+- [x] `@CacheEvict` on updates and deletes
+- [x] Verify eviction actually works
 
 ### 7. Testing
 
@@ -116,7 +116,7 @@ and answers "is flag X on for user Y in environment Z?"
 
 ## Portfolio checklist
 
-- [ ] Public GitHub repo
-- [ ] README explaining the design and how to run it
+- [x] Public GitHub repo
+- [x] README explaining the design and how to run it
 - [x] Real tests that pass
 - [ ] Dockerfile

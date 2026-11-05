@@ -24,6 +24,9 @@ class FlagServiceTest {
     @Mock
     private FlagRepository repo;
 
+    @Mock
+    private FlagLookup flagLookup;
+
     @Captor
     private ArgumentCaptor<Flag> flagCaptor;
 
@@ -44,7 +47,7 @@ class FlagServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new FlagService(repo, new FlagProperties(Set.of("dev", "prod")));
+        service = new FlagService(repo, flagLookup, new FlagProperties(Set.of("dev", "prod")));
 
         flag = new Flag();
         ReflectionTestUtils.setField(flag, "id", ID);
@@ -96,17 +99,17 @@ class FlagServiceTest {
 
     @Test
     void testGet() {
-        given(repo.findById(ID)).willReturn(Optional.of(flag));
+        given(flagLookup.getById(ID)).willReturn(FlagResponse.from(flag));
 
         FlagResponse result = service.get(ID);
 
         assertFlagEqualsResult(result);
-        then(repo).shouldHaveNoMoreInteractions();
+        then(flagLookup).shouldHaveNoMoreInteractions();
     }
 
     @Test
     void testEvaluate() {
-        given(repo.findByName(flag.getName())).willReturn(Optional.of(flag));
+        given(flagLookup.getByName(flag.getName())).willReturn(FlagResponse.from(flag));
 
         String userId = "123456";
         String env = "dev";
@@ -116,16 +119,16 @@ class FlagServiceTest {
         assertThat(result.flag()).isEqualTo(flag.getName());
         assertThat(result.environment()).isEqualTo(env);
         assertThat(result.userId()).isEqualTo(userId);
-        then(repo).shouldHaveNoMoreInteractions();
+        then(flagLookup).shouldHaveNoMoreInteractions();
     }
 
     @Test
     void testEvaluate_NotFound() {
-        given(repo.findByName(flag.getName())).willReturn(Optional.empty());
+        given(flagLookup.getByName(flag.getName())).willThrow(new FlagNotFoundException(flag.getName()));
 
         assertThrows(FlagNotFoundException.class, () -> service.evaluate(flag.getName(), "123456", "dev"));
 
-        then(repo).shouldHaveNoMoreInteractions();
+        then(flagLookup).shouldHaveNoMoreInteractions();
     }
 
     @Test
@@ -178,6 +181,7 @@ class FlagServiceTest {
 
     @Test
     void testUpdate() {
+        String flagName = flag.getName();
         given(repo.findById(ID)).willReturn(Optional.of(flag));
         given(repo.existsByName(updateRequest.name())).willReturn(false);
 
@@ -190,6 +194,7 @@ class FlagServiceTest {
         assertThat(result.enabled()).isEqualTo(updateRequest.enabled());
         assertThat(result.rolloutPercentage()).isEqualTo(updateRequest.rolloutPercentage());
 
+        then(flagLookup).should().evict(ID, flagName);
         then(repo).shouldHaveNoMoreInteractions();
     }
 
@@ -200,6 +205,8 @@ class FlagServiceTest {
         FlagResponse result = service.update(ID, request);
 
         assertFlagEqualsResult(result);
+        then(flagLookup).should().evict(ID, flag.getName());
+        then(flagLookup).shouldHaveNoMoreInteractions();
         then(repo).shouldHaveNoMoreInteractions();
     }
 
@@ -209,6 +216,7 @@ class FlagServiceTest {
                 UnknownEnvironmentException.class,
                 () -> service.update(1L, new FlagRequest("test-flag", null, false, Set.of("pord"), 0)));
 
+        then(flagLookup).shouldHaveNoMoreInteractions();
         then(repo).shouldHaveNoMoreInteractions();
     }
 
@@ -218,6 +226,7 @@ class FlagServiceTest {
 
         assertThrows(FlagNotFoundException.class, () -> service.update(ID, request));
 
+        then(flagLookup).shouldHaveNoMoreInteractions();
         then(repo).shouldHaveNoMoreInteractions();
     }
 
@@ -241,14 +250,17 @@ class FlagServiceTest {
                 )
         );
 
+        then(flagLookup).shouldHaveNoMoreInteractions();
         then(repo).shouldHaveNoMoreInteractions();
     }
 
     @Test
     void testDelete() {
+        given(repo.findById(ID)).willReturn(Optional.of(flag));
+
         service.delete(ID);
 
-        then(repo).should().deleteById(ID);
-        then(repo).shouldHaveNoMoreInteractions();
+        then(flagLookup).should().evict(ID, flag.getName());
+        then(repo).should().delete(flag);
     }
 }
